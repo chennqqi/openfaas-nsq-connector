@@ -1,0 +1,43 @@
+
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  labels:
+    app: kafka
+    component: kafka-connector
+  name: kafka-connector
+  namespace: openfaas
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: kafka
+        component: kafka-connector
+    spec:
+      containers:
+      - name: kafka
+        image: openfaas/kafka-connector:0.3.3
+        env:
+          - name: gateway_url
+            value: "http://gateway.openfaas:8080"
+          - name: topics
+            value: "faas-request,"
+          - name: print_response
+            value: "true"
+          - name: print_response_body
+            value: "true"
+          - name: basic_auth
+            value: "true"
+          - name: secret_mount_path
+            value: "/var/secrets/"
+          - name: topic_delimiter
+            value: ","
+        volumeMounts:
+            - name: auth
+              readOnly: true
+              mountPath: "/var/secrets/"
+      volumes:
+      - name: auth
+        secret:
+          secretName: basic-auth

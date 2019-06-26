@@ -1,0 +1,55 @@
+version: '3.2'
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:${CONFLUENT_PLATFORM_VERSION:-5.0.1}
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - streaming
+
+  kafka:
+    image: confluentinc/cp-kafka:${CONFLUENT_PLATFORM_VERSION:-5.0.1}
+    depends_on:
+      - zookeeper
+    ports:
+      - 9092:9092
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks:
+      - streaming
+
+  connector:
+    image: openfaas/kafka-connector:0.3.3
+    hostname: kafka-connector
+    environment:
+      gateway_url: http://gateway:8080
+      topics: "faas-request,"
+      print_response: "true"
+      print_response_body: "true"
+      basic_auth: "true"
+      secret_mount_path: "/run/secrets/"
+    secrets:
+      - basic-auth-password
+      - basic-auth-user
+    networks:
+      - streaming
+      - func_functions
+
+networks:
+  streaming:
+    driver: overlay
+    attachable: true
+  func_functions:
+    external: true
+
+secrets:
+    basic-auth-user:
+        external: true
+    basic-auth-password:
+        external: true
