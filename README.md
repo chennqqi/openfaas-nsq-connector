@@ -6,7 +6,7 @@ Status](https://travis-ci.org/chennqqi/openfaas-nsq-connector.svg?branch=master)
 
 The Nsq connector connects OpenFaaS functions to Nsq topics.
 
-WIP: This project changed inspired by [https://github.com/openfaas-incubator/kafka-connector](https://github.com/openfaas-incubator/kafka-connector)
+WIP: This project changed/inspired by [https://github.com/openfaas-incubator/kafka-connector](https://github.com/openfaas-incubator/kafka-connector)
 
 
 Goals:
