@@ -1,0 +1,75 @@
+﻿---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nsqlookupd
+  labels:
+    app: nsq
+  namespace: openfaas
+spec:
+  ports:
+  - port: 4160
+    targetPort: 4160
+    name: tcp
+  - port: 4161
+    targetPort: 4161
+    name: http
+  publishNotReadyAddresses: true
+  clusterIP: None
+  selector:
+    app: nsq
+    component: nsqlookupd
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nsqd
+  labels:
+    app: nsq
+  namespace: openfaas
+spec:
+  ports:
+  - port: 4150
+    targetPort: 4150
+    name: tcp
+  - port: 4151
+    targetPort: 4151
+    name: http
+  clusterIP: None
+  selector:
+    app: nsq
+    component: nsqd
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nsqadmin
+  labels:
+    app: nsq
+  namespace: openfaas    
+spec:
+  ports:
+  - port: 4170
+    targetPort: 4170
+    name: tcp
+  - port: 4171
+    targetPort: 4171
+    name: http
+  selector:
+    app: nsq
+    component: nsqadmin
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: nsq
+  namespace: openfaas
+spec:
+  rules:
+    - host: nsq.example.com
+      http:
+        paths:
+        - path: /
+          backend:
+            serviceName: nsqadmin
+            servicePort: 4171

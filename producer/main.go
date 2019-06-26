@@ -6,15 +6,10 @@ import (
 	"log"
 	"time"
 
-	"github.com/Shopify/sarama"
-)
-
-var (
-	SARAMA_KAFKA_PROTO_VER = sarama.V0_10_2_0
+	"github.com/nsqio/go-nsq"
 )
 
 func main() {
-
 	var (
 		messages int
 		pause    time.Duration
@@ -23,45 +18,31 @@ func main() {
 	)
 
 	flag.IntVar(&messages, "messages", 1, "specify the number of messages")
-	flag.StringVar(&broker, "broker", "kafka:9092", "broker address and port")
+	flag.StringVar(&broker, "broker", "", "nsqd address and port")
 	flag.StringVar(&topic, "topic", "faas-request", "topic to produce messages on")
 	flag.DurationVar(&pause, "pause", time.Millisecond*100, "pause in Golang duration format")
-
 	flag.Parse()
 
-	brokerList := []string{broker}
-
-	config := sarama.NewConfig()
-	config.Version = SARAMA_KAFKA_PROTO_VER
-	config.Producer.RequiredAcks = sarama.WaitForAll
-	config.Producer.Retry.Max = 2
-	config.Producer.Return.Successes = true
+	nsqConfig := nsq.NewConfig()
+	nsqConfig.WriteTimeout = 3 * time.Second
+	nsqConfig.DialTimeout = 4 * time.Second
 
 	fmt.Println("Creating producer")
-	producer, err := sarama.NewSyncProducer(brokerList, config)
+	producer, err := nsq.NewProducer(broker, nsqConfig)
 	if err != nil {
 		panic(err)
 	}
-	defer func() {
-		if err := producer.Close(); err != nil {
-			panic(err)
-		}
-	}()
 
-	msg := &sarama.ProducerMessage{
-		Topic: topic,
-		Value: sarama.StringEncoder("Test the function."),
-	}
+	defer producer.Stop()
 
 	log.Printf("Sending %d messages.\n", messages)
 	for i := 0; i < messages; i++ {
-		partition, offset, err := producer.SendMessage(msg)
+		err := producer.Publish(topic, []byte("Test the function."))
 		if err != nil {
 			panic(err)
 		}
 
-		log.Printf("Msg: topic(%s)/partition(%d)/offset(%d)\n", topic, partition, offset)
-
+		log.Printf("Msg: topic(%s) publish OK\n", topic)
 		time.Sleep(pause)
 	}
 }

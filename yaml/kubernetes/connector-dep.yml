@@ -3,21 +3,21 @@ apiVersion: extensions/v1beta1
 kind: Deployment
 metadata:
   labels:
-    app: kafka
-    component: kafka-connector
-  name: kafka-connector
+    app: nsq-connector
+    component: nsq-connector
+  name: nsq-connector
   namespace: openfaas
 spec:
   replicas: 1
   template:
     metadata:
       labels:
-        app: kafka
-        component: kafka-connector
+        app: nsq-connector
+        component: nsq-connector
     spec:
       containers:
-      - name: kafka
-        image: openfaas/kafka-connector:0.3.3
+      - name: nsq-connector
+        image: sort/openfaas-nsq-connector:0.1.0
         env:
           - name: gateway_url
             value: "http://gateway.openfaas:8080"

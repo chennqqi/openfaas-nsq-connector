@@ -1,5 +1,3 @@
-// Copyright (c) Alex Ellis 2017. All rights reserved.
-// Copyright (c) OpenFaaS Project 2018. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 package main
@@ -8,15 +6,13 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/Shopify/sarama"
-	cluster "github.com/bsm/sarama-cluster"
-
 	"github.com/nsqio/go-nsq"
-
 	"github.com/openfaas-incubator/connector-sdk/types"
 )
 
@@ -26,8 +22,9 @@ type connectorConfig struct {
 	Broker string
 
 	//for nsq
-	Lookupd []string
-	Nsqd    []string
+	Lookupd     []string
+	Nsqd        []string
+	MaxInFlight int
 }
 
 func main() {
@@ -38,90 +35,132 @@ func main() {
 
 	controller.BeginMapBuilder()
 
-	brokers := []string{config.Broker + ":9092"}
-	waitForBrokers(brokers, config, controller)
-
-	makeConsumer(brokers, config, controller)
+	waitForBrokers(config, controller)
+	makeConsumer(config, controller)
 }
 
-func waitForBrokers(brokers []string, config connectorConfig, controller *types.Controller) {
+func waitForBrokers(config connectorConfig, controller *types.Controller) {
+	//only check tcp connection
 	var client sarama.Client
 	var err error
 
 	for {
-		if len(controller.Topics()) > 0 {
-			client, err = sarama.NewClient(brokers, nil)
-			if client != nil && err == nil {
-				break
+		if len(config.Lookupd) > 0 {
+			for i := 0; i < len(config.Lookupd); i++ {
+				conn, err := net.DialTimeout("tcp", config.Lookupd[i], timeout)
+				//at least one connect ok
+				if err == nil {
+					conn.Close()
+					return
+				}
 			}
-			if client != nil {
-				client.Close()
+		} else {
+			var expect = true
+			for i := 0; i < len(config.Nsqd); i++ {
+				conn, err := net.DialTimeout("tcp", config.Lookupd[i], timeout)
+				//all should least one connect ok
+				if err != nil { //at least one connect ok
+					expect = false
+					break
+				} else {
+					conn.Close()
+				}
 			}
-			fmt.Println("Wait for brokers ("+config.Broker+") to come up.. ", brokers)
+			if expect {
+				return
+			}
 		}
-
 		time.Sleep(1 * time.Second)
 	}
 }
 
-func makeConsumer(brokers []string, config connectorConfig, controller *types.Controller) {
-	//setup consumer
-	cConfig := cluster.NewConfig()
-	cConfig.Version = saramaKafkaProtocolVersion
-	cConfig.Consumer.Return.Errors = true
-	cConfig.Consumer.Offsets.Initial = sarama.OffsetNewest //OffsetOldest
-	cConfig.Group.Return.Notifications = true
-	cConfig.Group.Session.Timeout = 6 * time.Second
-	cConfig.Group.Heartbeat.Interval = 2 * time.Second
+type NsqHandler struct {
+	topic      string
+	controller *types.Controller
+	consumer   *nsq.Consumer
+	num        int
+}
 
+func (this *NsqHandler) HandleMessage(message *nsq.Message) error {
+	this.num = (this.num + 1) % math.MaxInt32
+	fmt.Printf("[#%d] Received on [%v,%v]: '%s'\n",
+		num,
+		this.Topic,
+		message.NSQDAddress,
+		string(message.Body))
+
+	controller.Invoke(this.Topic, &message.Body)
+	message.Finish() // mark message as processed
+}
+
+func makeConsumer(config connectorConfig, controller *types.Controller) {
+	//setup nsq consumer
 	nsqConfig := nsq.NewConfig()
+	nsqConfig.MaxInFlight = config.MaxInFlight
+	nsqConfig.WriteTimeout = 6 * time.Second
+	nsqConfig.DialTimeout = 4 * time.Second
 
-	group := "faas-kafka-queue-workers"
+	group := "faas-nsq-queue-workers"
 
 	topics := config.Topics
 	log.Printf("Binding to topics: %v", config.Topics)
 
-	consumer, err := cluster.NewConsumer(brokers, group, topics, cConfig)
-	if err != nil {
-		log.Fatalln("Fail to create Kafka consumer: ", err)
-	}
-
-	defer consumer.Close()
-
-	num := 0
-
-	for {
-		select {
-		case msg, ok := <-consumer.Messages():
-			if ok {
-				num = (num + 1) % math.MaxInt32
-				fmt.Printf("[#%d] Received on [%v,%v]: '%s'\n",
-					num,
-					msg.Topic,
-					msg.Partition,
-					string(msg.Value))
-
-				controller.Invoke(msg.Topic, &msg.Value)
-
-				consumer.MarkOffset(msg, "") // mark message as processed
-			}
-		case err = <-consumer.Errors():
-
-			fmt.Println("consumer error: ", err)
-
-		case ntf := <-consumer.Notifications():
-
-			fmt.Printf("Rebalanced: %+v\n", ntf)
-
+	var consumers []*nsq.Consumer
+	for i := 0; i < len(config.Topics); i++ {
+		consumer, err := nsq.NewConsumer(config.Topics[i], group, nsqConfig)
+		if err != nil {
+			log.Fatalln("Fail to create nsq consumer: ", err)
 		}
+		consumer.AddHandler(&NsqHandler{
+			config.Topics[i], controller, consumer, 0,
+		})
+
+		if len(config.Lookupd) > 0 {
+			err = consumer.ConnectToNSQLookupds(config.Lookupd)
+		} else {
+			err = consumer.ConnectToNSQDs(config.Nsqd)
+		}
+		if err != nil {
+			log.Fatalln("Fail to create Kafka consumer: ", err)
+		}
+		consumers = append(consumers, consumer)
 	}
+	//stop all consumer, unuse
+	defer func() {
+		for i := 0; i < len(consumers); i++ {
+			c := consumers[i]
+			if c != nil {
+				c.Stop()
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	wg.Add(len(consumer))
+
+	go func() {
+		for i := 0; i < len(consumers); i++ {
+			c := consumer
+			<-c.StopChan
+			wg.Done()
+		}
+	}()
+
+	wg.Wait()
 }
 
 func buildConnectorConfig() connectorConfig {
-
-	broker := "kafka"
-	if val, exists := os.LookupEnv("broker_host"); exists {
-		broker = val
+	nsqlookup := "nsqlookupd"
+	if val, exists := os.LookupEnv("nsqlookupd"); exists {
+		nsqlookup = val
+	}
+	nsqd := "nsqd"
+	if val, exists := os.LookupEnv("nsqd"); exists {
+		nsqd = val
+	}
+	maxInflight := 1000
+	if val, exists := os.LookupEnv("nsq_maxinflight"); exists {
+		fmt.Sscanf(val, "%d", &maxInflight)
 	}
 
 	topics := []string{}
@@ -184,7 +223,9 @@ func buildConnectorConfig() connectorConfig {
 			RebuildInterval:          rebuildInterval,
 			TopicAnnotationDelimiter: delimiter,
 		},
-		Topics: topics,
-		Broker: broker,
+		Topics:      topics,
+		Lookupd:     nsqlookup,
+		Nsqd:        nsqd,
+		MaxInFlight: maxInflight,
 	}
 }
